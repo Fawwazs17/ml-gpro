@@ -11,8 +11,9 @@ from pathlib import Path
 
 import cv2
 import joblib
-import mediapipe.python.solutions.hands as mp_hands
-import mediapipe.python.solutions.drawing_utils as mp_drawing
+import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 import numpy as np
 import streamlit as st
 import torch
@@ -80,39 +81,51 @@ def load_models(config):
     return mlp, yolo, scaler, le, device
 
 
-# ─── MediaPipe extractor ─────────────────────────────────────────────────────
+# ─── MediaPipe extractor (Tasks API for mediapipe >= 0.10) ───────────────────
 
-
-def extract_keypoints(image_rgb: np.ndarray):
-    with mp_hands.Hands(
-        static_image_mode=True, max_num_hands=1, min_detection_confidence=0.3
-    ) as hands:
-        results = hands.process(image_rgb)
-        if not results.multi_hand_landmarks:
-            return None, None
-        lm = results.multi_hand_landmarks[0].landmark
-        kp = np.array([[l.x, l.y, l.z] for l in lm], dtype=np.float32).flatten()
-        wrist = kp[:3].copy()
-        kp_norm = kp.copy()
-        for i in range(21):
-            kp_norm[i * 3 : (i + 1) * 3] -= wrist
-        return kp_norm, results.multi_hand_landmarks[0]
-
-
-def annotate_image(image_rgb: np.ndarray, hand_landmarks) -> np.ndarray:
-    annotated = image_rgb.copy()
-    mp_drawing.draw_landmarks(
-        annotated,
-        hand_landmarks,
-        mp_hands.HAND_CONNECTIONS,
-        mp_drawing.DrawingSpec(color=(0, 150, 255), thickness=2, circle_radius=4),
-        mp_drawing.DrawingSpec(color=(255, 220, 0), thickness=2),
+@st.cache_resource
+def load_landmarker(model_path: str):
+    base_opts = mp_python.BaseOptions(model_asset_path=model_path)
+    options = mp_vision.HandLandmarkerOptions(
+        base_options=base_opts, num_hands=1,
+        min_hand_detection_confidence=0.3,
+        min_hand_presence_confidence=0.3
     )
+    return mp_vision.HandLandmarker.create_from_options(options)
+
+
+def extract_keypoints(image_rgb: np.ndarray, landmarker):
+    mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+    results = landmarker.detect(mp_img)
+    if not results.hand_landmarks:
+        return None, None
+    lm = results.hand_landmarks[0]
+    kp = np.array([[l.x, l.y, l.z] for l in lm], dtype=np.float32).flatten()
+    wrist = kp[:3].copy()
+    kp_norm = kp.copy()
+    for i in range(21):
+        kp_norm[i * 3 : (i + 1) * 3] -= wrist
+    return kp_norm, lm
+
+
+def annotate_image(image_rgb: np.ndarray, lm_list) -> np.ndarray:
+    annotated = image_rgb.copy()
+    h, w = annotated.shape[:2]
+    pts = [(int(l.x * w), int(l.y * h)) for l in lm_list]
+    connections = [
+        (0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),
+        (0,9),(9,10),(10,11),(11,12),(0,13),(13,14),(14,15),(15,16),
+        (0,17),(17,18),(18,19),(19,20),(5,9),(9,13),(13,17)
+    ]
+    for a, b in connections:
+        cv2.line(annotated, pts[a], pts[b], (255, 220, 0), 2)
+    for pt in pts:
+        cv2.circle(annotated, pt, 4, (0, 150, 255), -1)
     return annotated
 
 
 # ─── Prediction function ─────────────────────────────────────────────────────
-def predict(image_rgb: np.ndarray, config, mlp, yolo, scaler, le, device):
+def predict(image_rgb: np.ndarray, config, mlp, yolo, scaler, le, device, landmarker):
     classes = config["classes"]
     num_classes = config["num_classes"]
 
@@ -128,7 +141,7 @@ def predict(image_rgb: np.ndarray, config, mlp, yolo, scaler, le, device):
             yolo_probs[i] = yolo_probs_raw[yolo_names.index(cls)]
 
     # ── MediaPipe + MLP prediction
-    kp, hand_lm = extract_keypoints(image_rgb)
+    kp, hand_lm = extract_keypoints(image_rgb, landmarker)
     mlp_probs = np.zeros(num_classes)
     if kp is not None:
         kp_scaled = scaler.transform(kp.reshape(1, -1))
@@ -172,6 +185,7 @@ if config is None:
     st.stop()
 
 mlp, yolo, scaler, le, device = load_models(config)
+landmarker = load_landmarker(config["hand_landmarker_path"])
 st.success(f"✅ Models loaded — {config['num_classes']} BIM classes | Device: {device}")
 
 # ── Upload
@@ -190,7 +204,7 @@ if uploaded:
 
     with st.spinner("Predicting..."):
         top_class, confidence, top3, hand_lm, mlp_probs, yolo_probs = predict(
-            image_rgb, config, mlp, yolo, scaler, le, device
+            image_rgb, config, mlp, yolo, scaler, le, device, landmarker
         )
 
     # Annotated image
