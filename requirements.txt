@@ -1,0 +1,14 @@
+ultralytics
+mediapipe
+scikit-learn
+matplotlib
+seaborn
+pandas
+numpy
+Pillow
+torch
+torchvision
+tqdm
+joblib
+opencv-python
+streamlit
