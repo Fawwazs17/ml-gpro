@@ -185,66 +185,80 @@ if config is None:
     st.stop()
 
 mlp, yolo, scaler, le, device = load_models(config)
-landmarker = load_landmarker(config["hand_landmarker_path"])
+landmarker_path = config.get("hand_landmarker_path", "models/hand_landmarker.task")
+landmarker = load_landmarker(landmarker_path)
 st.success(f"✅ Models loaded — {config['num_classes']} BIM classes | Device: {device}")
 
-# ── Upload
-uploaded = st.file_uploader(
-    "Upload a BIM hand sign image", type=["jpg", "jpeg", "png"]
-)
+# ── Input mode tabs
+tab1, tab2 = st.tabs(["📷 Webcam", "🖼️ Upload Image"])
 
-if uploaded:
-    image = Image.open(uploaded).convert("RGB")
-    image_rgb = np.array(image)
-
+def show_results(image_rgb):
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Input Image")
-        st.image(image, use_column_width=True)
+        st.subheader("Input")
+        st.image(image_rgb, use_column_width=True)
 
     with st.spinner("Predicting..."):
         top_class, confidence, top3, hand_lm, mlp_probs, yolo_probs = predict(
             image_rgb, config, mlp, yolo, scaler, le, device, landmarker
         )
 
-    # Annotated image
     if hand_lm:
         annotated = annotate_image(image_rgb, hand_lm)
         with col2:
-            st.subheader("Hand Landmarks (MediaPipe)")
+            st.subheader("Hand Landmarks")
             st.image(annotated, use_column_width=True)
     else:
         with col2:
             st.subheader("Hand Landmarks")
-            st.warning("No hand detected by MediaPipe — using YOLOv11 only.")
+            st.warning("No hand detected — using YOLOv11 only.")
 
     st.divider()
-
-    # Result
     st.markdown(f"## Prediction: **{top_class}**")
     st.progress(confidence, text=f"Confidence: {confidence * 100:.1f}%")
 
-    # Top 3
     st.subheader("Top 3 Predictions")
     for rank, (cls, prob) in enumerate(top3, 1):
         st.progress(prob, text=f"#{rank} {cls} — {prob * 100:.1f}%")
 
-    # Model breakdown
-    with st.expander("Model breakdown"):
-        st.markdown("**MLP (MediaPipe keypoints) — top prediction:**")
-        if np.any(mlp_probs > 0):
-            mlp_top = le.inverse_transform([np.argmax(mlp_probs)])[0]
-            st.write(f"`{mlp_top}` ({mlp_probs.max() * 100:.1f}%)")
-        else:
-            st.write("No hand detected — MLP not used.")
+    return top_class, mlp_probs, yolo_probs
 
-        st.markdown("**YOLOv11 — top prediction:**")
-        yolo_top = le.inverse_transform([np.argmax(yolo_probs)])[0]
-        st.write(f"`{yolo_top}` ({yolo_probs.max() * 100:.1f}%)")
+# ── Tab 1: Webcam
+with tab1:
+    st.markdown("Show your hand sign to the camera and click **Capture**.")
+    cam_image = st.camera_input("Capture BIM sign")
+    if cam_image:
+        image = Image.open(cam_image).convert("RGB")
+        image_rgb = np.array(image)
+        top_class, mlp_probs, yolo_probs = show_results(image_rgb)
+        with st.expander("Model breakdown"):
+            st.markdown("**MLP (MediaPipe keypoints):**")
+            if np.any(mlp_probs > 0):
+                st.write(f"`{le.inverse_transform([np.argmax(mlp_probs)])[0]}` ({mlp_probs.max()*100:.1f}%)")
+            else:
+                st.write("No hand detected.")
+            st.markdown("**YOLOv11:**")
+            st.write(f"`{le.inverse_transform([np.argmax(yolo_probs)])[0]}` ({yolo_probs.max()*100:.1f}%)")
+            st.markdown("**Ensemble:** 50% MLP + 50% YOLOv11 soft vote")
 
-        st.markdown("**Ensemble:** 50% MLP + 50% YOLOv11 soft vote")
+# ── Tab 2: Upload
+with tab2:
+    uploaded = st.file_uploader("Upload a BIM hand sign image", type=["jpg", "jpeg", "png"])
+    if uploaded:
+        image = Image.open(uploaded).convert("RGB")
+        image_rgb = np.array(image)
+        top_class, mlp_probs, yolo_probs = show_results(image_rgb)
+        with st.expander("Model breakdown"):
+            st.markdown("**MLP (MediaPipe keypoints):**")
+            if np.any(mlp_probs > 0):
+                st.write(f"`{le.inverse_transform([np.argmax(mlp_probs)])[0]}` ({mlp_probs.max()*100:.1f}%)")
+            else:
+                st.write("No hand detected.")
+            st.markdown("**YOLOv11:**")
+            st.write(f"`{le.inverse_transform([np.argmax(yolo_probs)])[0]}` ({yolo_probs.max()*100:.1f}%)")
+            st.markdown("**Ensemble:** 50% MLP + 50% YOLOv11 soft vote")
 
-    st.caption(
+st.caption(
         "BICS 4340 Machine Learning | Group G | "
         "Iman Zafri · Muhammad Aizam · Adam Fawwaz · Muhammad Iman Imtiyaz"
     )

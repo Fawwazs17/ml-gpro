@@ -32,9 +32,9 @@
   ],
   "num_classes": 29,
   "input_dim": 63,
-  "yolo_model_path": "/sessions/bold-focused-cannon/mnt/ml-gpro/models/yolo11_bim/weights/best.pt",
-  "mlp_model_path": "/sessions/bold-focused-cannon/mnt/ml-gpro/models/mlp_model.pt",
-  "scaler_path": "/sessions/bold-focused-cannon/mnt/ml-gpro/models/scaler.pkl",
-  "encoder_path": "/sessions/bold-focused-cannon/mnt/ml-gpro/models/label_encoder.pkl",
-  "hand_landmarker_path": "/sessions/bold-focused-cannon/mnt/ml-gpro/models/hand_landmarker.task"
+  "yolo_model_path": "runs/classify/models/yolo11_bim/weights/best.pt",
+  "mlp_model_path": "models/mlp_model.pt",
+  "scaler_path": "models/scaler.pkl",
+  "encoder_path": "models/label_encoder.pkl",
+  "hand_landmarker_path": "models/hand_landmarker.task"
 }

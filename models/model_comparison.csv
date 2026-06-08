@@ -1,0 +1,8 @@
+Model,Accuracy,Precision,Recall,F1
+SVM (RBF),1.0,1.0,1.0,1.0
+Random Forest,1.0,1.0,1.0,1.0
+KNN (k=5),1.0,1.0,1.0,1.0
+YOLOv11n-cls,1.0,1.0,1.0,1.0
+MLP (Keypoints),1.0,1.0,1.0,1.0
+Hybrid (MLP + YOLOv11),1.0,1.0,1.0,1.0
+SVM (Tuned),1.0,1.0,1.0,1.0
