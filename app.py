@@ -9,6 +9,7 @@ import json
 import tempfile
 from pathlib import Path
 
+import av
 import cv2
 import joblib
 import mediapipe as mp
@@ -20,6 +21,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from ultralytics import YOLO
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 
 # ─── Page config ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -196,7 +198,7 @@ def show_results(image_rgb):
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Input")
-        st.image(image_rgb, use_column_width=True)
+        st.image(image_rgb, use_container_width=True)
 
     with st.spinner("Predicting..."):
         top_class, confidence, top3, hand_lm, mlp_probs, yolo_probs = predict(
@@ -207,7 +209,7 @@ def show_results(image_rgb):
         annotated = annotate_image(image_rgb, hand_lm)
         with col2:
             st.subheader("Hand Landmarks")
-            st.image(annotated, use_column_width=True)
+            st.image(annotated, use_container_width=True)
     else:
         with col2:
             st.subheader("Hand Landmarks")
@@ -223,23 +225,88 @@ def show_results(image_rgb):
 
     return top_class, mlp_probs, yolo_probs
 
-# ── Tab 1: Webcam
+# ── Shared state for real-time prediction label
+if "rt_label" not in st.session_state:
+    st.session_state.rt_label = "—"
+if "rt_conf" not in st.session_state:
+    st.session_state.rt_conf = 0.0
+
+# ── Video frame callback (runs on every webcam frame)
+def video_frame_callback(frame: av.VideoFrame) -> av.VideoFrame:
+    img = frame.to_ndarray(format="bgr24")
+    img = cv2.flip(img, 1)  # un-mirror horizontally
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    try:
+        # MediaPipe keypoints
+        kp, lm_list = extract_keypoints(img_rgb, landmarker)
+
+        # YOLO prediction
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            cv2.imwrite(tmp.name, img)
+            yolo_pred = yolo.predict(tmp.name, imgsz=224, verbose=False)
+        yolo_probs_raw = yolo_pred[0].probs.data.cpu().numpy()
+        yolo_names = [yolo_pred[0].names[i] for i in range(len(yolo_pred[0].names))]
+        yolo_probs = np.zeros(config["num_classes"])
+        for i, cls in enumerate(le.classes_):
+            if cls in yolo_names:
+                yolo_probs[i] = yolo_probs_raw[yolo_names.index(cls)]
+
+        # MLP prediction
+        mlp_probs = np.zeros(config["num_classes"])
+        if kp is not None:
+            kp_scaled = scaler.transform(kp.reshape(1, -1))
+            kp_tensor = torch.tensor(kp_scaled, dtype=torch.float32).to(device)
+            with torch.no_grad():
+                mlp_probs = torch.softmax(mlp(kp_tensor), dim=1).cpu().numpy()[0]
+
+        # Ensemble
+        hybrid = 0.5 * mlp_probs + 0.5 * yolo_probs if kp is not None else yolo_probs
+        top_idx = int(np.argmax(hybrid))
+        top_class = le.inverse_transform([top_idx])[0]
+        confidence = float(hybrid[top_idx])
+        st.session_state.rt_label = top_class
+        st.session_state.rt_conf = confidence
+
+        # Draw landmarks on frame
+        if lm_list:
+            h, w = img.shape[:2]
+            pts = [(int(l.x * w), int(l.y * h)) for l in lm_list]
+            connections = [
+                (0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),
+                (0,9),(9,10),(10,11),(11,12),(0,13),(13,14),(14,15),(15,16),
+                (0,17),(17,18),(18,19),(19,20),(5,9),(9,13),(13,17)
+            ]
+            for a, b in connections:
+                cv2.line(img, pts[a], pts[b], (255, 220, 0), 2)
+            for pt in pts:
+                cv2.circle(img, pt, 4, (0, 150, 255), -1)
+
+        # Draw prediction overlay on frame
+        label_text = f"{top_class}  {confidence*100:.0f}%"
+        cv2.rectangle(img, (0, 0), (300, 50), (0, 0, 0), -1)
+        cv2.putText(img, label_text, (10, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 100), 3)
+
+    except Exception:
+        pass
+
+    return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+# ── Tab 1: Real-time webcam
 with tab1:
-    st.markdown("Show your hand sign to the camera and click **Capture**.")
-    cam_image = st.camera_input("Capture BIM sign")
-    if cam_image:
-        image = Image.open(cam_image).convert("RGB")
-        image_rgb = np.array(image)
-        top_class, mlp_probs, yolo_probs = show_results(image_rgb)
-        with st.expander("Model breakdown"):
-            st.markdown("**MLP (MediaPipe keypoints):**")
-            if np.any(mlp_probs > 0):
-                st.write(f"`{le.inverse_transform([np.argmax(mlp_probs)])[0]}` ({mlp_probs.max()*100:.1f}%)")
-            else:
-                st.write("No hand detected.")
-            st.markdown("**YOLOv11:**")
-            st.write(f"`{le.inverse_transform([np.argmax(yolo_probs)])[0]}` ({yolo_probs.max()*100:.1f}%)")
-            st.markdown("**Ensemble:** 50% MLP + 50% YOLOv11 soft vote")
+    st.markdown("Show your BIM hand sign to the camera — predictions update in real time.")
+    webrtc_streamer(
+        key="bim-realtime",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
+        video_frame_callback=video_frame_callback,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+    st.markdown(f"### Prediction: **{st.session_state.rt_label}**")
+    if st.session_state.rt_conf > 0:
+        st.progress(st.session_state.rt_conf, text=f"Confidence: {st.session_state.rt_conf*100:.1f}%")
 
 # ── Tab 2: Upload
 with tab2:
