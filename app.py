@@ -11,7 +11,8 @@ from pathlib import Path
 
 import cv2
 import joblib
-import mediapipe as mp
+import mediapipe.python.solutions.hands as mp_hands
+import mediapipe.python.solutions.drawing_utils as mp_drawing
 import numpy as np
 import streamlit as st
 import torch
@@ -80,8 +81,6 @@ def load_models(config):
 
 
 # ─── MediaPipe extractor ─────────────────────────────────────────────────────
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
 
 
 def extract_keypoints(image_rgb: np.ndarray):
